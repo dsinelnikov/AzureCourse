@@ -1,0 +1,507 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "sqlServerLogin": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sqlServerPassword": {
+      "type": "securestring"
+    },
+    "vmsetLogin": {
+      "type": "string",
+      "minLength": 1
+    },
+    "vmsetPassword": {
+      "type": "securestring"
+    },
+    "storageAccountType": {
+      "type": "string",
+      "defaultValue": "Standard_LRS",
+      "allowedValues": [
+        "Standard_LRS",
+        "Standard_ZRS",
+        "Standard_GRS",
+        "Standard_RAGRS",
+        "Premium_LRS"
+      ]
+    },
+    "jumpBoxLogin": {
+      "type": "string",
+      "minLength": 1
+    },
+    "jumpBoxPassword": {
+      "type": "securestring"
+    },
+    "api1SourcesUrl": {
+      "type": "string"
+    },
+    "_artifactsLocation": {
+      "type": "string",
+      "metadata": {
+        "description": "Auto-generated container in staging storage account to receive post-build staging folder upload"
+      }
+    },
+    "_artifactsLocationSasToken": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Auto-generated token to access _artifactsLocation"
+      }
+    }
+  },
+  "variables": {
+    "vnetName": "[concat('network-', uniqueString(resourceGroup().id))]",
+    "vnetId": "[resourceId('Microsoft.Network/virtualNetworks/', variables('vnetName'))]",
+    "api1-subnet-name": "[concat('api1-subnet-', uniqueString(resourceGroup().id))]",
+    "api1-subnet-ref": "[concat(variables('vnetId'), '/subnets/', variables('api1-subnet-name'))]",
+    "api1-subnet-id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('api1-subnet-name'))]",
+    "managementSubnetName": "[concat('management-subnet-', uniqueString(resourceGroup().id))]",
+    "managementSubnetRef": "[concat(variables('vnetId'), '/subnets/', variables('managementSubnetName'))]",
+    "managementSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('managementSubnetName'))]",
+
+    "api1-sql-serverName": "[concat('api1-sql-server-', uniqueString(resourceGroup().id))]",
+    "api1-sql-serverId": "[resourceId('Microsoft.Sql/servers', variables('api1-sql-serverName'))]",
+    "api1-sql-serverDbName": "Posts",
+
+    "api-imageReference": {
+      "publisher": "MicrosoftWindowsServer",
+      "offer": "WindowsServer",
+      "sku": "2012-R2-Datacenter",
+      "version": "latest"
+    },
+    "api1-vmset-name": "[concat('api1Vmset', uniqueString(resourceGroup().id))]",
+    "api1-ipaddress-name": "[concat('api1-ipaddress-', uniqueString(resourceGroup().id))]",
+    "api1-ipaddress-id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('api1-ipaddress-name'))]",
+    "api1-ipconfig-name": "[concat('api1-config-', uniqueString(resourceGroup().id))]",
+    "api1-network-interface-name": "[concat('api1-network-interface-', uniqueString(resourceGroup().id))]",
+    "api1-bepool-name": "[concat('api1-bepool-', uniqueString(resourceGroup().id))]",
+    "api1-natpool-name": "[concat('api1-natpool-', uniqueString(resourceGroup().id))]",
+    "api1-loadbalancer-name": "[concat('api1-loadbalancer-', uniqueString(resourceGroup().id))]",
+    "api1-loadbalancer-id": "[resourceId('Microsoft.Network/loadBalancers', variables('api1-loadbalancer-name'))]",
+    "api1-namingInfix": "[toLower(substring(concat(variables('api1-vmset-name'), uniqueString(resourceGroup().id)), 0, 9))]",
+    "api1-newStorageAccountSuffix": "[concat(variables('api1-namingInfix'), 'sa')]",
+    "api1-uniqueStringArray": [
+      "[concat(uniqueString(concat(resourceGroup().id, variables('api1-newStorageAccountSuffix'), '0')), variables('api1-newStorageAccountSuffix'))]"
+    ],
+    "vhdContainerName": "[concat(variables('vnetName'), 'vhd')]",
+    "storageAccountName": "[concat('storageAccount', uniqueString(resourceGroup().id))]",
+    "JumpBoxName": "jumbox",
+    "JumpBoxStorageAccountName": "[concat('jbsa', uniqueString(resourceGroup().id))]",
+    "JumpBoxStorageAccountType": "Standard_LRS",
+    "JumpBoxImagePublisher": "MicrosoftWindowsServer",
+    "JumpBoxImageOffer": "WindowsServer",
+    "JumpBoxWindowsOSVersion": "2012-R2-Datacenter",
+    "JumpBoxOSDiskName": "JumpBoxOSDisk",
+    "JumpBoxVmSize": "Standard_D2_v2",
+    "JumpBoxVnetID": "[resourceId('Microsoft.Network/virtualNetworks', 'JumpBoxSubnet')]",
+    "JumpBoxStorageAccountContainerName": "vhds",
+    "JumpBoxNicName": "[concat(variables('JumpBoxName'), 'NetworkInterface')]",
+    "JumboxNamingInfix": "[toLower(substring(concat(variables('JumpBoxName'), uniqueString(resourceGroup().id)), 0, 9))]",
+    "JumpboxPublicIPAddressName": "[concat(variables('JumboxNamingInfix'), 'pip')]",
+    "JumpboxLongNamingInfix": "[toLower(variables('JumpBoxName'))]",
+    "API1-DSCArchiveFolder": "DSC",
+    "API1-DSCArchiveFileName": "API1-DSC.zip",
+    "Api-Service-DSCArchiveFolder": "DSC",
+    "Api-Service-DSCArchiveFileName": "Api-Service-DSC.zip"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "name": "[variables('vnetName')]",
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2018-02-01",
+      "tags": {
+        "displayName": "VirtualNetwork"
+      },
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "10.0.0.0/16"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[variables('api1-subnet-name')]",
+            "properties": {
+              "addressPrefix": "10.0.0.0/24",
+              "serviceEndpoints": [
+                {
+                  "provisioningState": "Succeeded",
+                  "service": "Microsoft.Sql",
+                  "locations": [
+                    "centralus"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "[variables('managementSubnetName')]",
+            "properties": {
+              "addressPrefix": "10.0.1.0/24"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "name": "[variables('api1-uniqueStringArray')[copyIndex()]]",
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2016-01-01",
+      "tags": {
+        "displayName": "StorageAccounts"
+      },
+      "copy": {
+        "name": "storageLoop",
+        "count": "[length(variables('api1-uniqueStringArray'))]"
+      },
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "Storage"
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "name": "[variables('api1-ipaddress-name')]",
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2016-03-30",
+      "tags": {
+        "displayName": "PublicIP"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Dynamic",
+        "dnsSettings": {
+          "domainNameLabel": "[toLower(variables('api1-vmset-name'))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/loadBalancers",
+      "name": "[variables('api1-loadbalancer-name')]",
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2016-03-30",
+      "tags": {
+        "displayName": "LoadBalancer"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses/', variables('api1-ipaddress-name'))]"
+      ],
+      "properties": {
+        "frontendIPConfigurations": [
+          {
+            "name": "LoadBalancerFrontEnd",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "subnet": {
+                "id": "[variables('api1-subnet-ref')]"
+              }
+            }
+          }
+        ],
+        "backendAddressPools": [
+          {
+            "name": "[variables('api1-bepool-name')]"
+          }
+        ],
+        "inboundNatPools": [
+          {
+            "name": "[variables('api1-natpool-name')]",
+            "properties": {
+              "frontendIPConfiguration": {
+                "id": "[concat(variables('api1-loadbalancer-id'), '/frontendIPConfigurations/loadBalancerFrontEnd')]"
+              },
+              "protocol": "tcp",
+              "frontendPortRangeStart": 50000,
+              "frontendPortRangeEnd": 50099,
+              "backendPort": 3389
+            }
+          }
+        ],
+        "loadBalancingRules": [
+          {
+            "properties": {
+              "frontendIPConfiguration": {
+                "id": "[concat(resourceId('Microsoft.Network/loadBalancers', variables('api1-loadbalancer-name')), '/frontendIPConfigurations/LoadBalancerFrontend')]"
+              },
+              "backendAddressPool": {
+                "id": "[concat(resourceId('Microsoft.Network/loadBalancers', variables('api1-loadbalancer-name')), '/backendAddressPools/', variables('api1-bepool-name'))]"
+              },
+              "probe": {
+                "id": "[concat(resourceId('Microsoft.Network/loadBalancers', variables('api1-loadbalancer-name')), '/probes/lbprobe')]"
+              },
+              "protocol": "Tcp",
+              "frontendPort": 80,
+              "backendPort": 80,
+              "idleTimeoutInMinutes": 15
+            },
+            "name": "lbrule"
+          }
+        ],
+        "probes": [
+          {
+            "properties": {
+              "protocol": "Tcp",
+              "port": 80,
+              "intervalInSeconds": 15,
+              "numberOfProbes": 2
+            },
+            "name": "lbprobe"
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachineScaleSets",
+      "name": "[variables('api1-vmset-name')]",
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2016-03-30",
+      "tags": {
+        "displayName": "API1-VMSS"
+      },
+      "dependsOn": [
+        "storageLoop",
+        "[variables('api1-loadbalancer-id')]",
+        "[variables('vnetId')]",
+        "[variables('api1-sql-serverId')]"
+      ],
+      "sku": {
+        "name": "Standard_A1",
+        "tier": "Standard",
+        "capacity": "1"
+      },
+      "properties": {
+        "overprovision": "true",
+        "upgradePolicy": {
+          "mode": "Manual"
+        },
+        "virtualMachineProfile": {
+          "storageProfile": {
+            "osDisk": {
+              "vhdContainers": [
+                "[concat(reference(resourceId('Microsoft.Storage/storageAccounts', variables('api1-uniqueStringArray')[0]), '2016-01-01').primaryEndpoints.blob, variables('vhdContainerName'))]"
+              ],
+              "name": "osDisk",
+              "caching": "ReadOnly",
+              "createOption": "FromImage"
+            },
+            "imageReference": "[variables('api-imageReference')]"
+          },
+          "osProfile": {
+            "computerNamePrefix": "[toLower(substring(concat('vmset1', uniqueString(resourceGroup().id)), 0, 9))]",
+            "adminUsername": "[parameters('vmsetLogin')]",
+            "adminPassword": "[parameters('vmsetPassword')]"
+          },
+          "networkProfile": {
+            "networkInterfaceConfigurations": [
+              {
+                "name": "[variables('api1-network-interface-name')]",
+                "properties": {
+                  "primary": true,
+                  "ipConfigurations": [
+                    {
+                      "name": "[variables('api1-ipconfig-name')]",
+                      "properties": {
+                        "subnet": {
+                          "id": "[variables('api1-subnet-ref')]"
+                        },
+                        "loadBalancerBackendAddressPools": [
+                          {
+                            "id": "[concat(variables('api1-loadbalancer-id'), '/backendAddressPools/', variables('api1-bepool-name'))]"
+                          }
+                        ],
+                        "loadBalancerInboundNatPools": [
+                          {
+                            "id": "[concat(variables('api1-loadbalancer-id'), '/inboundNatPools/', variables('api1-natpool-name'))]"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "extensionProfile": {
+            "extensions": [
+              {
+                "name": "Microsoft.Powershell.DSC",
+                "properties": {
+                  "publisher": "Microsoft.Powershell",
+                  "type": "DSC",
+                  "typeHandlerVersion": "2.9",
+                  "autoUpgradeMinorVersion": true,
+                  "settings": {
+                    "configuration": {
+                      "url": "[concat(parameters('_artifactsLocation'), '/', variables('Api-Service-DSCArchiveFolder'), '/', variables('Api-Service-DSCArchiveFileName'))]",
+                      "script": "Api-Service-DSC.ps1",
+                      "function": "Main"
+                    },
+                    "configurationArguments": {
+                      "nodeName": "localhost",
+                      "sqlServerName": "[variables('api1-sql-serverName')]",
+                      "sqlServerLogin": "[parameters('sqlServerLogin')]",
+                      "sqlServerPassword": "[parameters('sqlServerPassword')]",
+                      "serviceSourseUrl": "[parameters('api1SourcesUrl')]"
+                    }
+                  },
+                  "protectedSettings": {
+                    "configurationUrlSasToken": "[parameters('_artifactsLocationSasToken')]"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "[variables('api1-sql-serverName')]",
+      "type": "Microsoft.Sql/servers",
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2014-04-01-preview",
+      "dependsOn": [],
+      "tags": {
+        "displayName": "api1-sql-server"
+      },
+      "properties": {
+        "administratorLogin": "[parameters('sqlServerLogin')]",
+        "administratorLoginPassword": "[parameters('sqlServerPassword')]"
+      },
+      "resources": [
+        {
+          "name": "[concat('allow-', variables('api1-subnet-name'))]",
+          "type": "virtualNetworkRules",
+          "apiVersion": "2015-05-01-preview",
+          "dependsOn": [
+            "[variables('api1-sql-serverId')]",
+            "[variables('managementSubnetId')]"
+          ],
+          "properties": {
+            "virtualNetworkSubnetId": "[variables('managementSubnetId')]"
+          }
+        },
+        {
+          "name": "[variables('api1-sql-serverDbName')]",
+          "type": "databases",
+          "location": "[resourceGroup().location]",
+          "apiVersion": "2014-04-01-preview",
+          "dependsOn": [
+            "[variables('api1-sql-serverId')]"
+          ],
+          "tags": {
+            "displayName": "posts-db"
+          },
+          "properties": {
+            "collation": "SQL_Latin1_General_CP1_CI_AS",
+            "edition": "Basic",
+            "maxSizeBytes": "1073741824",
+            "requestedServiceObjectiveName": "Basic"
+          }
+        }
+      ]
+    },
+    {
+      "name": "[variables('JumpBoxStorageAccountName')]",
+      "type": "Microsoft.Storage/storageAccounts",
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2016-01-01",
+      "sku": {
+        "name": "[variables('JumpBoxStorageAccountType')]"
+      },
+      "dependsOn": [],
+      "tags": {
+        "displayName": "JumpBoxStorageAccount"
+      },
+      "kind": "Storage"
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "name": "[variables('JumpboxPublicIPAddressName')]",
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2017-04-01",
+      "properties": {
+        "publicIPAllocationMethod": "Dynamic",
+        "dnsSettings": {
+          "domainNameLabel": "[variables('JumpboxLongNamingInfix')]"
+        }
+      }
+    },
+    {
+      "name": "[variables('JumpBoxNicName')]",
+      "type": "Microsoft.Network/networkInterfaces",
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2016-03-30",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+        "[concat('Microsoft.Network/publicIPAddresses/', variables('JumpboxPublicIPAddressName'))]"
+      ],
+      "tags": {
+        "displayName": "JumpBoxNic"
+      },
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses',variables('JumpboxPublicIPAddressName'))]"
+              },
+              "subnet": {
+                "id": "[variables('managementSubnetRef')]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "[variables('JumpBoxName')]",
+      "type": "Microsoft.Compute/virtualMachines",
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2015-06-15",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('JumpBoxStorageAccountName'))]",
+        "[resourceId('Microsoft.Network/networkInterfaces', variables('JumpBoxNicName'))]"
+      ],
+      "tags": {
+        "displayName": "JumpBox"
+      },
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[variables('JumpBoxVmSize')]"
+        },
+        "osProfile": {
+          "computerName": "[variables('JumpBoxName')]",
+          "adminUsername": "[parameters('JumpBoxLogin')]",
+          "adminPassword": "[parameters('JumpBoxPassword')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "[variables('JumpBoxImagePublisher')]",
+            "offer": "[variables('JumpBoxImageOffer')]",
+            "sku": "[variables('JumpBoxWindowsOSVersion')]",
+            "version": "latest"
+          },
+          "osDisk": {
+            "name": "JumpBoxOSDisk",
+            "vhd": {
+              "uri": "[concat(reference(resourceId('Microsoft.Storage/storageAccounts', variables('JumpBoxStorageAccountName')), '2016-01-01').primaryEndpoints.blob, variables('JumpBoxStorageAccountContainerName'), '/', variables('JumpBoxOSDiskName'), '.vhd')]"
+            },
+            "caching": "ReadWrite",
+            "createOption": "FromImage"
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('JumpBoxNicName'))]"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

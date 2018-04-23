@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "api1SourcesUrl": {
+      "value": "https://github.com/dsinelnikov/PostsApi/archive/master.zip"
+    },
+    "sqlServerLogin": {
+      "value": "denis"
+    },
+    "vmsetLogin": {
+      "value": "denis"
+    },
+    "jumpBoxLogin": {
+      "value": "denis"
+    },
+    "sqlServerPassword": {
+      "value": "P@ssword"
+    },
+    "vmsetPassword": {
+      "value": "P@ssw0rd1234"
+    },
+    "jumpBoxPassword": {
+      "value": "P@ssw0rd1234"
+    }
+  }
+}
